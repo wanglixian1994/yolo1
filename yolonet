@@ -1,0 +1,174 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from load import DataLoader
+import pickle
+# alpha = 0.1
+# confidence_scale = 7*7*2
+
+batch = 5
+# offset = np.transpose(np.reshape(np.array([np.arange(7)] * 7 * 2), (2, 7, 7)), (1, 2, 0))
+
+
+
+def cal_iou(predict_box, true_box):
+    # pre对角坐标
+    pre_boxs = tf.stack([predict_box[...,0] - predict_box[...,2]/2.0,
+    predict_box[...,1] - predict_box[...,3]/2.0,
+    predict_box[...,0] + predict_box[...,2]/2.0,
+    predict_box[...,1] + predict_box[...,3]/2.0], axis=-1)
+    # label对角坐标
+    label_boxs = tf.stack([true_box[...,0] - true_box[...,2]/2.0,
+    true_box[...,1] - true_box[...,3]/2.0,
+    true_box[...,0] + true_box[...,2]/2.0,
+    true_box[...,1] + true_box[...,3]/2.0], axis=-1)
+    # cross坐标
+    cross_left = tf.maximum(pre_boxs[..., :2], label_boxs[..., :2])
+    cross_right = tf.maximum(pre_boxs[..., 2:], label_boxs[..., 2:])
+
+    d = tf.maximum(0.0, cross_right - cross_left)
+
+    s_small = d[..., 0] * d[..., 1]
+
+    s_big = (predict_box[..., 2] * predict_box[..., 3] + true_box[..., 2] * true_box[..., 3]) - s_small
+    s_big = tf.maximum(s_big, 0.0001)
+    iou = tf.clip_by_value(s_small / s_big, 0.0, 1.0)
+
+    # n 7 7 2
+    return iou
+
+
+def loss_function_batch(label, predict):
+    print(label.shape)
+    print(predict.shape, '预测维度')
+    # predict 预测 n 490 -> [n,7,7,2] [n,7,7,2,4]
+    predict_confidence = tf.reshape(predict[:, :7*7*2], [batch, 7, 7, 2])
+
+    predict_box = tf.reshape(predict[:, 7*7*2:], [batch, 7, 7, 2, 4])
+
+    # label 标签 -> [n,7,7,1] [n,7,7,1,4]
+    label_confidence = tf.reshape(label[..., 0], [batch, 7, 7, 1])
+    label_box = tf.reshape(label[..., 1:5], [batch, 7, 7, 1, 4])
+
+    # 标签边框 -> [n,7,7,2,4] 归一化
+    label_box1 = tf.tile(label_box, [1, 1, 1, 2, 1]) / 448.0
+
+    # 变换
+
+    offset = np.transpose(np.reshape(np.array([np.arange(7)] * 7 * 2), (2, 7, 7)), (1, 2, 0))
+    set = tf.cast(tf.reshape(tf.constant(offset), [1, 7, 7, 2]), dtype=tf.float32)
+    set1 = tf.tile(set, [batch, 1, 1, 1])
+    set2 = tf.transpose(set1, (0, 2, 1, 3))
+    print(set1,'set1')
+    print(set2)
+
+    # 预测 x,y相对cell -> 相对全图 [n,7,7,2,4]
+    pre_box = tf.stack([(predict_box[..., 0] + set1) / 7.0,
+                        (predict_box[..., 1] + set2) / 7.0,
+                        tf.square(predict_box[..., 2]),
+                        tf.square(predict_box[..., 3])], axis=-1)
+
+    # [n,7,7,2]
+    iou = cal_iou(pre_box, label_box1)
+    print(iou.shape, 'iou形状')
+    max_iou = tf.reduce_max(iou, 3, keepdims=True)
+
+    # 有目标标记 1*iou
+    # [n,7,7,2]
+    I_obj = tf.cast((iou >= max_iou), dtype=tf.float32) * label_confidence
+    print(I_obj.shape, 'Iobj形状')
+    # 无目标标记 1
+    I_nobj = tf.ones_like(I_obj, dtype=tf.float32) - I_obj
+    print(I_nobj.shape, 'nobj')
+    # 标签 相对全图 -> 相对cell [n,7,7,2,4]
+    label_box1_t = tf.stack([label_box1[..., 0] * 7.0 - set1,
+                             label_box1[..., 1] * 7.0 - set2,
+                             tf.sqrt(label_box1[..., 2]),
+                             tf.sqrt(label_box1[..., 3])], axis=-1)
+    print(label_box1_t.shape, 'label-t')
+    # obj_loss
+
+    ob = I_obj * (predict_confidence - iou)
+    print(ob.shape, 'ob')
+
+    obj_loss = tf.reduce_mean(tf.reduce_sum(tf.square(ob), axis=[1, 2, 3]))
+    print(obj_loss, 'objloss')
+    print(obj_loss.shape,'objlossshape')
+    # nobj_loss
+
+    nob = I_nobj * predict_confidence
+    nobj_loss = tf.reduce_mean(tf.reduce_sum(tf.square(nob), axis=[1, 2, 3]))
+    print(nobj_loss, 'nobjloss')
+    # bbox_loss
+    # [n,7,7,2,1]
+    m = tf.expand_dims(I_obj, 4)
+    ob_box = m * (predict_box - label_box1_t)
+    bbox_loss = tf.reduce_mean(tf.reduce_sum(tf.square(ob_box), axis=[1,2,3,4])) * 5
+    print(bbox_loss, 'bboxloss')
+    # final_loss
+
+    final_loss = obj_loss + nobj_loss + bbox_loss
+    print(final_loss.shape, 'loss情况')
+    print(final_loss, '损失函数值')
+
+    return final_loss
+
+
+path = 'D:\\PycharmProject\\BoundingRegression\\data\\data_labels.pkl'
+with open(path, 'rb') as f:
+    data = pickle.load(f)
+
+
+obj = DataLoader.Load()
+data, label = obj.get_data(data, 30)
+
+
+train_data = data[:20].astype(np.float32)
+print(tf.shape(train_data))
+print(type(train_data))
+val_data = data[20:].astype(np.float32)
+train_label = label[:20].astype(np.float32)
+val_label = label[20:].astype(np.float32)
+print(tf.shape(train_label))
+
+yolo_cnn = keras.models.Sequential([
+        keras.layers.Conv2D(64, 7, 2, padding='valid', input_shape=[448,448,3]),
+        keras.layers.LeakyReLU(alpha=0.1),
+        keras.layers.MaxPool2D(2, 2, padding='same'),
+
+        keras.layers.Conv2D(192, 3, 1, padding='same'),
+        keras.layers.LeakyReLU(alpha=0.1),
+        keras.layers.MaxPool2D(2,2,padding='same'),
+
+        keras.layers.Conv2D(128, 1, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.Conv2D(256, 3, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.Conv2D(256, 1, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.Conv2D(512, 3, 1, padding='same'),
+        keras.layers.LeakyReLU(alpha=0.1),
+        keras.layers.MaxPool2D(2,2,padding='same'),
+
+
+        # keras.layers.Conv2D(256, 1, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.Conv2D(512, 3, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.Conv2D(1024, 3, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+        # keras.layers.MaxPool2D(2, 2, padding='same'),
+        # keras.layers.Conv2D(1024, 3, 1, padding='same'),
+        # keras.layers.LeakyReLU(alpha=0.1),
+
+        keras.layers.Flatten(),
+        keras.layers.Dense(4096),
+        keras.layers.LeakyReLU(alpha=0.1),
+        keras.layers.Dropout(0.5),
+        keras.layers.Dense(490)
+        ])
+
+yolo_cnn.summary()
+yolo_cnn.compile(loss=loss_function_batch, optimizer='sgd', metrics=['accuracy'])
+yolo_cnn.fit(train_data, train_label, validation_data=(val_data, val_label), epochs=1, batch_size=batch)
+yolo_cnn.save("my_model_4.h5")
