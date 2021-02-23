@@ -1,0 +1,99 @@
+import os
+import xml.etree.ElementTree as ET
+import numpy as np
+import cv2
+import pickle
+
+
+class Load():
+
+    def __init__(self):
+        self.data_path = 'D:\\data\\voc_face\\VOC2012'
+        self.image_size = 448
+        self.cell_size = 7
+        self.labels = None
+
+    def image_read(self, im):
+        image = cv2.imread(im)
+        image = cv2.resize(image, (self.image_size,self.image_size))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
+        image = image/255.0
+
+        # 448*448*3 像素归一
+        return image
+
+    def image_annotation(self, im_index):
+        # 读取图片并处理
+        image_name = os.path.join(self.data_path, 'JPEGImages', im_index + '.jpg')
+        image = cv2.imread(image_name)
+
+        # 高宽缩放比例
+        height_ratio = 1.0 * self.image_size/image.shape[0]
+        weight_ratio = 1.0 * self.image_size/image.shape[1]
+
+        label = np.zeros((7,7,5))
+
+        image_annotation = os.path.join(self.data_path, 'Annotations', im_index + '.xml')
+
+        xml_parse = ET.parse(image_annotation)
+
+        ob = xml_parse.findall('object')
+
+        for a in ob:
+            bbox = a.find('bndbox')
+
+            x1 = max(min((float(bbox.find('xmin').text) - 1) * weight_ratio, self.image_size - 1), 0)
+            y1 = max(min((float(bbox.find('ymin').text) - 1) * height_ratio, self.image_size - 1), 0)
+            x2 = max(min((float(bbox.find('xmax').text) - 1) * weight_ratio, self.image_size - 1), 0)
+            y2 = max(min((float(bbox.find('ymax').text) - 1) * height_ratio, self.image_size - 1), 0)
+            box = [(x1 + x2)/ 2.0, (y1 + y2)/ 2.0, x2 - x1, y2 - y1]
+
+            x_id = int(box[0] * self.cell_size / self.image_size)
+            y_id = int(box[1] * self.cell_size / self.image_size)
+
+            label[y_id, x_id, 0] = 1
+            label[y_id, x_id, 1:5] = box
+        # resize后标签 [7,7,5] 未归一
+        return label, len(ob)
+
+    def data_merge(self):
+        image_path = 'D:\\data\\voc_face\\VOC2012\\JPEGImages'
+
+        data_file = 'D:\\PycharmProject\\BoundingRegression\\data\\data_labels.pkl'
+
+        data_index_file = 'D:\\data\\voc_face\\VOC2012\\ImageSets\\Main\\train2.txt'
+
+        with open(data_index_file, 'r') as f:
+            image_index = [i.strip() for i in f.readlines()]
+
+        datalabel = []
+        for index in image_index:
+            label, number = self.image_annotation(index)
+
+            if number == 0:
+                continue
+            data_path = os.path.join(image_path, index + '.jpg')
+
+            datalabel.append({'impath': data_path,
+                              'label': label})
+            print('现在是', index)
+        with open(data_file, 'wb') as f:
+            pickle.dump(datalabel, f)
+        return datalabel
+
+
+
+    def get_data(self,data,size):
+
+        image = np.zeros((size, 448, 448, 3))
+        label = np.zeros((size, 7, 7, 5))
+
+
+        count = 0
+        while count < size:
+            imname = data[count]['impath']
+            image[count, :, :, :] = self.image_read(imname)
+            label[count, :, :, :] = data[count]['label']
+            count = count+1
+
+        return image, label
