@@ -1,0 +1,44 @@
+from load import DataLoader
+import cv2
+import pickle
+
+path = 'D:\\PycharmProject\\BoundingRegression\\data\\data_labels.pkl'
+with open(path, 'rb') as f:
+    data = pickle.load(f)
+
+
+
+obj = DataLoader.Load()
+data, label = obj.get_data(data, 50)
+
+ilabel = label[3]
+
+
+
+def re(image):
+
+    b = []
+    for i in range(0,7):
+        for j in range(0,7):
+            if image[i][j][0] == 1:
+                b.append(image[i][j][1:5])
+
+    return b
+
+def xy(a):
+    x1 = a[0] - a[2]/2
+    y1 = a[1] - a[3]/2
+    x2 = a[0] + a[2]/2
+    y2 = a[1] + a[3]/2
+    return int(x1), int(y1), int(x2), int(y2)
+
+a = re(ilabel)
+x1, y1, x2, y2 = xy(a[0])
+left = (x1, y1)
+right = (x2, y2)
+
+cv2.rectangle(data[3], left, right,(0, 255, 0), 2)
+
+cv2.namedWindow('input_image', cv2.WINDOW_AUTOSIZE)
+cv2.imshow('input_image', data[3])
+cv2.waitKey(0)
